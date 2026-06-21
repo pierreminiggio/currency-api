@@ -6,17 +6,18 @@ same date is never fetched from Frankfurter twice.
 
 ## Endpoints
 
-* `GET /usd/{amount}` - Converts `{amount}` EUR into USD, using today's rate.
-* `GET /usd/{amount}?date=YYYY-MM-DD` - Converts `{amount}` EUR into USD, using the rate of the given date.
-* `GET /eur/{amount}` - Converts `{amount}` USD into EUR, using today's rate.
-* `GET /eur/{amount}?date=YYYY-MM-DD` - Converts `{amount}` USD into EUR, using the rate of the given date.
+* `GET /to-usd/{amount}` - Converts `{amount}` EUR into USD, using today's rate.
+* `GET /to-usd/{amount}?date=YYYY-MM-DD` - Converts `{amount}` EUR into USD, using the rate of the given date.
+* `GET /to-eur/{amount}` - Converts `{amount}` USD into EUR, using today's rate.
+* `GET /to-eur/{amount}?date=YYYY-MM-DD` - Converts `{amount}` USD into EUR, using the rate of the given date.
+* `GET /openapi` - Interactive API documentation (Swagger UI), served from an inline OpenAPI 3.0 spec.
 
 `{amount}` must be a positive number (integer or decimal, e.g. `10` or `12.5`).
 
 ### Example
 
 ```
-GET /usd/10
+GET /to-usd/10
 {"amount":10,"from":"EUR","to":"USD","rate":1.1751,"date":"2026-01-01","result":11.751}
 ```
 

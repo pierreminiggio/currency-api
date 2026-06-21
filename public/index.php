@@ -21,8 +21,6 @@ if (strlen($calledEndPoint) > 1 && substr($calledEndPoint, -1) === '/') {
     $calledEndPoint = substr($calledEndPoint, 0, -1);
 }
 
-header('Content-Type: application/json');
-
 (new App())->run(
     $calledEndPoint,
     $queryParameters
