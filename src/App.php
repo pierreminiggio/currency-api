@@ -10,7 +10,10 @@ class App
 {
     private const TO_USD_ENDPOINT = 'to-usd';
     private const TO_EUR_ENDPOINT = 'to-eur';
+    private const TO_CRYPTO_ENDPOINT = 'to-crypto';
     private const OPENAPI_ENDPOINT = 'openapi';
+
+    private const VS_CURRENCY = 'usd';
 
     public function run(string $path, ?string $queryParameters): void
     {
@@ -24,24 +27,41 @@ class App
             return;
         }
 
-        $parsedPath = $this->parsePath($trimmedPath);
+        $segments = explode('/', $trimmedPath);
 
-        if ($parsedPath === null) {
+        if (count($segments) === 2) {
+            $this->handleFiatConversion($segments, $queryParameters);
+
+            return;
+        }
+
+        if (count($segments) === 3) {
+            $this->handleCryptoConversion($segments, $queryParameters);
+
+            return;
+        }
+
+        http_response_code(404);
+    }
+
+    private function handleFiatConversion(array $segments, ?string $queryParameters): void
+    {
+        [$endpoint, $rawAmount] = $segments;
+
+        if ($endpoint !== self::TO_USD_ENDPOINT && $endpoint !== self::TO_EUR_ENDPOINT) {
             http_response_code(404);
 
             return;
         }
 
-        [$endpoint, $rawAmount] = $parsedPath;
+        $amount = $this->parseAmount($rawAmount);
 
-        if (! is_numeric($rawAmount) || (float) $rawAmount < 0) {
+        if ($amount === null) {
             http_response_code(400);
             echo json_encode(['message' => 'Amount must be a positive number']);
 
             return;
         }
-
-        $amount = (float) $rawAmount;
 
         $requestedDate = $this->getRequestedDate($queryParameters);
 
@@ -52,15 +72,7 @@ class App
             return;
         }
 
-        $config = require __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'config.php';
-        $dbConfig = $config['db'];
-        $fetcher = new DatabaseFetcher(new DatabaseConnection(
-            $dbConfig['host'],
-            $dbConfig['database'],
-            $dbConfig['username'],
-            $dbConfig['password']
-        ));
-
+        $fetcher = $this->createDatabaseFetcher();
         $repository = new ExchangeRateRepository($fetcher);
         $client = new FrankfurterClient();
 
@@ -103,28 +115,146 @@ class App
         ]);
     }
 
-    /**
-     * @return array{0: string, 1: string}|null Array of [endpoint, rawAmount], or null if the path is invalid.
-     */
-    private function parsePath(string $trimmedPath): ?array
+    private function handleCryptoConversion(array $segments, ?string $queryParameters): void
     {
-        $segments = explode('/', $trimmedPath);
+        [$endpoint, $rawAmount, $coinSymbolOrId] = $segments;
 
-        if (count($segments) !== 2) {
+        if ($endpoint !== self::TO_USD_ENDPOINT && $endpoint !== self::TO_CRYPTO_ENDPOINT) {
+            http_response_code(404);
+
+            return;
+        }
+
+        $amount = $this->parseAmount($rawAmount);
+
+        if ($amount === null) {
+            http_response_code(400);
+            echo json_encode(['message' => 'Amount must be a positive number']);
+
+            return;
+        }
+
+        if ($coinSymbolOrId === '') {
+            http_response_code(404);
+
+            return;
+        }
+
+        $coinId = $this->resolveCoinId($coinSymbolOrId);
+
+        $requestedDate = $this->getRequestedDate($queryParameters);
+
+        if ($requestedDate === false) {
+            http_response_code(400);
+            echo json_encode(['message' => 'date must be in YYYY-MM-DD format']);
+
+            return;
+        }
+
+        $fetcher = $this->createDatabaseFetcher();
+        $repository = new CryptoPriceRepository($fetcher);
+        $client = new CoinGeckoClient();
+
+        try {
+            $priceInfo = $this->getCryptoPrice($repository, $client, $coinId, $requestedDate);
+        } catch (DatabaseFetcherException $e) {
+            http_response_code(500);
+            echo json_encode(['message' => 'Database error']);
+
+            return;
+        }
+
+        if (is_string($priceInfo)) {
+            if ($priceInfo === CoinGeckoClient::ERROR_NOT_FOUND) {
+                http_response_code(404);
+                echo json_encode(['message' => 'Unknown coin: ' . $coinSymbolOrId]);
+
+                return;
+            }
+
+            if ($priceInfo === CoinGeckoClient::ERROR_RATE_LIMITED) {
+                http_response_code(503);
+                echo json_encode(['message' => 'Rate limited by upstream source, please retry shortly']);
+
+                return;
+            }
+
+            http_response_code(502);
+            echo json_encode(['message' => 'Could not retrieve crypto price']);
+
+            return;
+        }
+
+        ['date' => $effectiveDate, 'price' => $priceInUsd] = $priceInfo;
+
+        if ($endpoint === self::TO_USD_ENDPOINT) {
+            $from = strtoupper($coinSymbolOrId);
+            $to = 'USD';
+            $result = $amount * $priceInUsd;
+        } else {
+            $from = 'USD';
+            $to = strtoupper($coinSymbolOrId);
+            $result = $amount / $priceInUsd;
+        }
+
+        http_response_code(200);
+        echo json_encode([
+            'amount' => $amount,
+            'from' => $from,
+            'to' => $to,
+            'coin' => $coinId,
+            'rate' => $priceInUsd,
+            'date' => $effectiveDate,
+            'result' => $result
+        ]);
+    }
+
+    /**
+     * CoinGecko coin IDs don't always match their ticker symbol (e.g. BNB is "binancecoin",
+     * not "bnb"). This maps a few well-known symbols people are likely to type, while still
+     * allowing any other string through unchanged in case it's already a valid CoinGecko ID
+     * (e.g. "solana", "dogecoin").
+     */
+    private function resolveCoinId(string $symbolOrId): string
+    {
+        static $knownSymbols = [
+            'btc' => 'bitcoin',
+            'eth' => 'ethereum',
+            'bnb' => 'binancecoin',
+            'xrp' => 'ripple',
+            'sol' => 'solana',
+            'ada' => 'cardano',
+            'doge' => 'dogecoin'
+        ];
+
+        $normalized = strtolower($symbolOrId);
+
+        return $knownSymbols[$normalized] ?? $normalized;
+    }
+
+    private function createDatabaseFetcher(): DatabaseFetcher
+    {
+        $config = require __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'config.php';
+        $dbConfig = $config['db'];
+
+        return new DatabaseFetcher(new DatabaseConnection(
+            $dbConfig['host'],
+            $dbConfig['database'],
+            $dbConfig['username'],
+            $dbConfig['password']
+        ));
+    }
+
+    /**
+     * @return float|null Null if $rawAmount isn't a valid positive number.
+     */
+    private function parseAmount(string $rawAmount): ?float
+    {
+        if (! is_numeric($rawAmount) || (float) $rawAmount < 0) {
             return null;
         }
 
-        [$endpoint, $rawAmount] = $segments;
-
-        if ($endpoint !== self::TO_USD_ENDPOINT && $endpoint !== self::TO_EUR_ENDPOINT) {
-            return null;
-        }
-
-        if ($rawAmount === '') {
-            return null;
-        }
-
-        return [$endpoint, $rawAmount];
+        return (float) $rawAmount;
     }
 
     /**
@@ -208,6 +338,62 @@ class App
     }
 
     /**
+     * @return array{date: string, price: float}|string array on success, or one of the
+     *                                                    CoinGeckoClient::ERROR_* constants on failure.
+     */
+    private function getCryptoPrice(
+        CryptoPriceRepository $repository,
+        CoinGeckoClient $client,
+        string $coinId,
+        ?string $requestedDate
+    ): array|string {
+        // A specific past date was requested: if we already have it cached, we never
+        // need to call CoinGecko again, since historical prices don't change.
+        if ($requestedDate !== null) {
+            $cachedPrice = $repository->findCachedPrice($coinId, self::VS_CURRENCY, $requestedDate);
+
+            if ($cachedPrice !== null) {
+                return ['date' => $requestedDate, 'price' => $cachedPrice];
+            }
+        }
+
+        // CoinGecko's historical endpoint expects DD-MM-YYYY, unlike the rest of this API
+        // (and unlike Frankfurter) which use YYYY-MM-DD. Convert only for the outgoing call.
+        // $requestedDate has already passed isValidDate() by this point, so this conversion
+        // cannot actually fail, but we guard it anyway rather than assume.
+        $coinGeckoDate = null;
+
+        if ($requestedDate !== null) {
+            $parsedDate = \DateTime::createFromFormat('Y-m-d', $requestedDate);
+
+            if ($parsedDate === false) {
+                return CoinGeckoClient::ERROR_UPSTREAM;
+            }
+
+            $coinGeckoDate = $parsedDate->format('d-m-Y');
+        }
+
+        $fetched = $client->getPrice($coinId, self::VS_CURRENCY, $coinGeckoDate);
+
+        if (is_string($fetched)) {
+            return $fetched;
+        }
+
+        // Unlike Frankfurter, CoinGecko's historical endpoint doesn't echo back an
+        // "effective" date that could differ from what was requested (e.g. for non-trading
+        // days), so the date we cache under is simply the one that was requested, or today's
+        // date (UTC) when none was given.
+        $effectiveDate = $requestedDate ?? gmdate('Y-m-d');
+
+        // Only cache prices for past dates: "today"'s price is still moving live.
+        if ($effectiveDate !== gmdate('Y-m-d')) {
+            $repository->storePrice($coinId, self::VS_CURRENCY, $effectiveDate, $fetched['price']);
+        }
+
+        return ['date' => $effectiveDate, 'price' => $fetched['price']];
+    }
+
+    /**
      * Serves a human-readable API documentation page (Swagger UI) backed by an inline
      * OpenAPI 3.0 spec, so the whole thing works from a single endpoint with no extra files.
      */
@@ -217,13 +403,34 @@ class App
             'openapi' => '3.0.3',
             'info' => [
                 'title' => 'Currency API',
-                'description' => 'Converts amounts between EUR and USD, for the latest rate or any past date, '
-                    . 'caching rates per date so repeated historical lookups never re-query the upstream source.',
+                'description' => 'Converts amounts between EUR, USD and cryptocurrencies, for the latest rate '
+                    . 'or any past date, caching rates per date so repeated historical lookups never re-query '
+                    . 'the upstream sources (Frankfurter for EUR/USD, CoinGecko for crypto).' . "\n\n"
+                    . '### Finding available coin symbols' . "\n\n"
+                    . 'The `{coin}` path parameter on the crypto endpoints accepts either a well-known ticker '
+                    . '(`BTC`, `ETH`, `BNB`, `XRP`, `SOL`, `ADA`, `DOGE`, case-insensitive) or any '
+                    . '[CoinGecko coin ID](https://www.coingecko.com/en/all-cryptocurrencies) directly '
+                    . '(e.g. `polkadot`, `litecoin`). Tickers not in that short list are *not* automatically '
+                    . 'resolved, since most tickers are ambiguous across coins (CoinGecko alone tracks 17,000+); '
+                    . 'use the coin\'s ID instead. To find a coin\'s ID: search for it on coingecko.com and read '
+                    . 'the ID from its page URL or its "API ID" field, or call CoinGecko\'s own '
+                    . '[`/coins/list`](https://api.coingecko.com/api/v3/coins/list) endpoint directly '
+                    . '(no key required) and look up the symbol you have, e.g. `bnb` to find `binancecoin`.',
                 'version' => '1.0.0'
             ],
             'paths' => [
                 '/' . self::TO_USD_ENDPOINT . '/{amount}' => $this->buildConversionPathSpec('EUR', 'USD'),
-                '/' . self::TO_EUR_ENDPOINT . '/{amount}' => $this->buildConversionPathSpec('USD', 'EUR')
+                '/' . self::TO_EUR_ENDPOINT . '/{amount}' => $this->buildConversionPathSpec('USD', 'EUR'),
+                '/' . self::TO_USD_ENDPOINT . '/{amount}/{coin}' => $this->buildCryptoConversionPathSpec(
+                    'Convert a cryptocurrency to USD',
+                    'amount',
+                    'in the given coin'
+                ),
+                '/' . self::TO_CRYPTO_ENDPOINT . '/{amount}/{coin}' => $this->buildCryptoConversionPathSpec(
+                    'Convert USD to a cryptocurrency',
+                    'amount in USD',
+                    ''
+                )
             ],
             'components' => [
                 'schemas' => [
@@ -236,6 +443,22 @@ class App
                             'rate' => ['type' => 'number', 'example' => 1.1751],
                             'date' => ['type' => 'string', 'format' => 'date', 'example' => '2026-01-01'],
                             'result' => ['type' => 'number', 'example' => 11.751]
+                        ]
+                    ],
+                    'CryptoConversionResult' => [
+                        'type' => 'object',
+                        'properties' => [
+                            'amount' => ['type' => 'number', 'example' => 1],
+                            'from' => ['type' => 'string', 'example' => 'BTC'],
+                            'to' => ['type' => 'string', 'example' => 'USD'],
+                            'coin' => [
+                                'type' => 'string',
+                                'example' => 'bitcoin',
+                                'description' => 'The resolved CoinGecko coin ID that was actually used.'
+                            ],
+                            'rate' => ['type' => 'number', 'example' => 96000.42],
+                            'date' => ['type' => 'string', 'format' => 'date', 'example' => '2026-01-01'],
+                            'result' => ['type' => 'number', 'example' => 96000.42]
                         ]
                     ],
                     'Error' => [
@@ -318,6 +541,85 @@ HTML;
                     ],
                     '502' => [
                         'description' => 'Could not retrieve the exchange rate from the upstream source',
+                        'content' => [
+                            'application/json' => [
+                                'schema' => ['$ref' => '#/components/schemas/Error']
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        ];
+    }
+
+    private function buildCryptoConversionPathSpec(string $summary, string $amountMeaning, string $amountSuffix): array
+    {
+        $amountDescription = trim('Amount, ' . $amountMeaning . ', e.g. 1 or 0.5 ' . $amountSuffix);
+
+        return [
+            'get' => [
+                'summary' => $summary,
+                'parameters' => [
+                    [
+                        'name' => 'amount',
+                        'in' => 'path',
+                        'required' => true,
+                        'schema' => ['type' => 'number'],
+                        'description' => $amountDescription
+                    ],
+                    [
+                        'name' => 'coin',
+                        'in' => 'path',
+                        'required' => true,
+                        'schema' => ['type' => 'string'],
+                        'description' => 'BTC, ETH, BNB, XRP, SOL, ADA, DOGE (case-insensitive), '
+                            . 'or any CoinGecko coin ID (e.g. polkadot). See the description above '
+                            . 'for how to look up a coin\'s ID.'
+                    ],
+                    [
+                        'name' => 'date',
+                        'in' => 'query',
+                        'required' => false,
+                        'schema' => ['type' => 'string', 'format' => 'date'],
+                        'description' => 'Date to use for the price, in YYYY-MM-DD format. '
+                            . 'Defaults to the latest available price when omitted.'
+                    ]
+                ],
+                'responses' => [
+                    '200' => [
+                        'description' => 'Conversion result',
+                        'content' => [
+                            'application/json' => [
+                                'schema' => ['$ref' => '#/components/schemas/CryptoConversionResult']
+                            ]
+                        ]
+                    ],
+                    '400' => [
+                        'description' => 'Invalid amount or date',
+                        'content' => [
+                            'application/json' => [
+                                'schema' => ['$ref' => '#/components/schemas/Error']
+                            ]
+                        ]
+                    ],
+                    '404' => [
+                        'description' => 'Unknown coin',
+                        'content' => [
+                            'application/json' => [
+                                'schema' => ['$ref' => '#/components/schemas/Error']
+                            ]
+                        ]
+                    ],
+                    '502' => [
+                        'description' => 'Could not retrieve the price from the upstream source',
+                        'content' => [
+                            'application/json' => [
+                                'schema' => ['$ref' => '#/components/schemas/Error']
+                            ]
+                        ]
+                    ],
+                    '503' => [
+                        'description' => 'Rate limited by the upstream source; retry shortly',
                         'content' => [
                             'application/json' => [
                                 'schema' => ['$ref' => '#/components/schemas/Error']
