@@ -182,6 +182,14 @@ class App
             http_response_code(502);
             echo json_encode(['message' => 'Could not retrieve crypto price']);
 
+            $debugInfo = $client->getLastRequestDebugInfo();
+            error_log(sprintf(
+                'CoinGecko upstream error: httpCode=%d curlError=%s responseBody=%s',
+                $debugInfo['httpCode'],
+                $debugInfo['curlError'] !== '' ? $debugInfo['curlError'] : '(none)',
+                $debugInfo['responseBody'] !== null ? substr($debugInfo['responseBody'], 0, 500) : '(none)'
+            ));
+
             return;
         }
 

@@ -10,6 +10,10 @@ class CoinGeckoClient
     public const ERROR_RATE_LIMITED = 'rate_limited';
     public const ERROR_UPSTREAM = 'upstream_error';
 
+    private int $lastHttpCode = 0;
+    private string $lastCurlError = '';
+    private ?string $lastResponseBody = null;
+
     /**
      * Fetches the price of a coin in the given currency, for a given date (DD-MM-YYYY) or
      * the latest price if $date is null.
@@ -85,13 +89,23 @@ class CoinGeckoClient
         curl_setopt($curl, CURLOPT_TIMEOUT, 10);
         curl_setopt($curl, CURLOPT_HTTPHEADER, ['Accept: application/json']);
 
+        // CoinGecko sits behind Cloudflare, which can reject requests with an empty or
+        // missing User-Agent as bot traffic (Cloudflare error 1020). PHP's cURL doesn't
+        // send one by default, so this needs to be explicit.
+        curl_setopt($curl, CURLOPT_USERAGENT, 'currency-api/1.0 (+https://github.com/)');
+
         // No API key: using the keyless public tier. If this ever gets rate-limited or
         // ASN-blocked in practice, sign up for a free Demo key and add it here, e.g.:
         // curl_setopt($curl, CURLOPT_HTTPHEADER, ['x-cg-demo-api-key: ' . $apiKey]);
 
         $result = curl_exec($curl);
         $httpCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($curl);
         curl_close($curl);
+
+        $this->lastHttpCode = $httpCode;
+        $this->lastCurlError = $curlError;
+        $this->lastResponseBody = is_string($result) ? $result : null;
 
         if ($result === false) {
             return self::ERROR_UPSTREAM;
@@ -116,5 +130,21 @@ class CoinGeckoClient
         }
 
         return $decoded;
+    }
+
+    /**
+     * Diagnostic info about the last request, regardless of whether it succeeded. Useful for
+     * logging/debugging an ERROR_UPSTREAM response, since that bucket alone doesn't say why.
+     * httpCode is 0 if the connection never completed (DNS/TLS/timeout failure; see curlError).
+     *
+     * @return array{httpCode: int, curlError: string, responseBody: string|null}
+     */
+    public function getLastRequestDebugInfo(): array
+    {
+        return [
+            'httpCode' => $this->lastHttpCode,
+            'curlError' => $this->lastCurlError,
+            'responseBody' => $this->lastResponseBody
+        ];
     }
 }
