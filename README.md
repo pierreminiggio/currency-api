@@ -94,7 +94,7 @@ ALTER TABLE `crypto_price`
 
 CREATE TABLE `crypto_symbol_map` (
   `id` int(11) NOT NULL,
-  `symbol` varchar(20) NOT NULL,
+  `symbol` varchar(64) NOT NULL,
   `coin_id` varchar(64) NOT NULL,
   `name` varchar(255) NOT NULL,
   `market_cap_rank` int(11) DEFAULT NULL,
@@ -108,6 +108,13 @@ ALTER TABLE `crypto_symbol_map`
 
 ALTER TABLE `crypto_symbol_map`
   MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+```
+
+If you already ran the earlier version of this migration (`symbol varchar(20)`), widen it instead
+of recreating the table:
+
+```sql
+ALTER TABLE `crypto_symbol_map` MODIFY `symbol` varchar(64) NOT NULL;
 ```
 
 `crypto_symbol_map` starts empty. Ticker resolution for anything outside the small hardcoded list

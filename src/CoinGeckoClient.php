@@ -133,6 +133,16 @@ class CoinGeckoClient
     }
 
     /**
+     * Sane upper bounds for symbol/name length. CoinGecko's list includes plenty of spam/junk
+     * coin listings, some with absurdly long "symbol" fields (occasionally entire phrases) that
+     * are never going to be typed as a ticker anyway - those are dropped rather than truncated,
+     * since a truncated garbage symbol could still collide with (and shadow) a real one.
+     */
+    private const MAX_SYMBOL_LENGTH = 30;
+    private const MAX_NAME_LENGTH = 255;
+    private const MAX_COIN_ID_LENGTH = 64;
+
+    /**
      * Fetches CoinGecko's full coin list: every coin it tracks, with id, symbol and name.
      * This is the source of truth used to build the symbol -> id cache (see
      * CryptoSymbolMapRepository and bin/refresh-crypto-symbols.php); it does not include market
@@ -156,10 +166,23 @@ class CoinGeckoClient
                 continue;
             }
 
+            $symbol = (string) $entry['symbol'];
+            $name = (string) $entry['name'];
+            $id = (string) $entry['id'];
+
+            if (
+                $symbol === ''
+                || strlen($symbol) > self::MAX_SYMBOL_LENGTH
+                || strlen($name) > self::MAX_NAME_LENGTH
+                || strlen($id) > self::MAX_COIN_ID_LENGTH
+            ) {
+                continue;
+            }
+
             $coins[] = [
-                'id' => (string) $entry['id'],
-                'symbol' => (string) $entry['symbol'],
-                'name' => (string) $entry['name']
+                'id' => $id,
+                'symbol' => $symbol,
+                'name' => $name
             ];
         }
 
