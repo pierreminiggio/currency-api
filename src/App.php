@@ -245,7 +245,9 @@ class App
             'xrp' => 'ripple',
             'sol' => 'solana',
             'ada' => 'cardano',
-            'doge' => 'dogecoin'
+            'doge' => 'dogecoin',
+
+            'matic' => 'polygon-ecosystem-token', // Old POL name
         ];
 
         $normalized = strtolower($symbolOrId);
