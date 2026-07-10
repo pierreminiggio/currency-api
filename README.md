@@ -7,6 +7,11 @@ dates), using [Frankfurter](https://frankfurter.dev/) for EUR/USD and
 [CoinGecko](https://www.coingecko.com/en/api) (keyless public tier) for crypto, with a MariaDB
 cache so the same date is never fetched from either upstream source twice.
 
+Crypto prices for a specific past date are cached forever (historical prices are immutable).
+"Latest" crypto prices (no `?date=`) are cached too, but only for 10 minutes at a time, since
+they're still moving - see `App::LATEST_PRICE_CACHE_TTL_SECONDS`. EUR/USD "latest" rates aren't
+cached at all yet (always fetched live from Frankfurter).
+
 ## Endpoints
 
 * `GET /to-usd/{amount}` - Converts `{amount}` EUR into USD, using today's rate.
@@ -126,7 +131,9 @@ USD→EUR direction is derived by dividing instead of caching a second row, sinc
 from the same Frankfurter lookup. The columns are kept generic in case more pairs are added later.
 
 `crypto_price` always stores prices against USD (`vs_currency` = `usd`); converting USD into a
-coin is derived by dividing, the same way as the fiat table.
+coin is derived by dividing, the same way as the fiat table. `created_at` doubles as "last
+refreshed at": it's bumped on every write (including updates to an existing row), which is what
+the 10-minute TTL for "latest" prices is measured against.
 
 `price` uses `decimal(30,10)` rather than `exchange_rate.rate`'s `decimal(20,10)` to comfortably
 fit Bitcoin-sized prices today and headroom for large future values, while still keeping enough

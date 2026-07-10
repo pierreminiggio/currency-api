@@ -15,6 +15,11 @@ class App
 
     private const VS_CURRENCY = 'usd';
 
+    // "Latest price" lookups are cached too (unlike historical ones, not forever): this bounds
+    // how stale a served "latest" price can be, while still sparing CoinGecko from being hit on
+    // every single request for a popular coin.
+    private const LATEST_PRICE_CACHE_TTL_SECONDS = 600; // 10 minutes
+
     public function run(string $path, ?string $queryParameters): void
     {
         header('Content-Type: application/json');
@@ -374,13 +379,24 @@ class App
         string $coinId,
         ?string $requestedDate
     ): array|string {
-        // A specific past date was requested: if we already have it cached, we never
-        // need to call CoinGecko again, since historical prices don't change.
+        $today = gmdate('Y-m-d');
+        $effectiveDate = $requestedDate ?? $today;
+
         if ($requestedDate !== null) {
+            // A specific past date was requested: if we already have it cached, we never
+            // need to call CoinGecko again, since historical prices don't change.
             $cachedPrice = $repository->findCachedPrice($coinId, self::VS_CURRENCY, $requestedDate);
 
             if ($cachedPrice !== null) {
                 return ['date' => $requestedDate, 'price' => $cachedPrice];
+            }
+        } else {
+            // "Latest" price: unlike a historical one it isn't immutable, so it's only served
+            // from cache while still within the TTL. Past that, fall through and re-fetch.
+            $cached = $repository->findCachedPriceWithAge($coinId, self::VS_CURRENCY, $today);
+
+            if ($cached !== null && $cached['ageSeconds'] < self::LATEST_PRICE_CACHE_TTL_SECONDS) {
+                return ['date' => $today, 'price' => $cached['price']];
             }
         }
 
@@ -406,16 +422,11 @@ class App
             return $fetched;
         }
 
-        // Unlike Frankfurter, CoinGecko's historical endpoint doesn't echo back an
-        // "effective" date that could differ from what was requested (e.g. for non-trading
-        // days), so the date we cache under is simply the one that was requested, or today's
-        // date (UTC) when none was given.
-        $effectiveDate = $requestedDate ?? gmdate('Y-m-d');
-
-        // Only cache prices for past dates: "today"'s price is still moving live.
-        if ($effectiveDate !== gmdate('Y-m-d')) {
-            $repository->storePrice($coinId, self::VS_CURRENCY, $effectiveDate, $fetched['price']);
-        }
+        // Cached either way now: forever for a past date (immutable), or for
+        // LATEST_PRICE_CACHE_TTL_SECONDS for "latest" (storePrice's ON DUPLICATE KEY UPDATE
+        // both replaces the price and refreshes created_at, which is what the TTL is measured
+        // against on the next request).
+        $repository->storePrice($coinId, self::VS_CURRENCY, $effectiveDate, $fetched['price']);
 
         return ['date' => $effectiveDate, 'price' => $fetched['price']];
     }
