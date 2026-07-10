@@ -133,6 +133,81 @@ class CoinGeckoClient
     }
 
     /**
+     * Fetches CoinGecko's full coin list: every coin it tracks, with id, symbol and name.
+     * This is the source of truth used to build the symbol -> id cache (see
+     * CryptoSymbolMapRepository and bin/refresh-crypto-symbols.php); it does not include market
+     * cap rank, so it can't alone disambiguate symbols shared by several coins.
+     *
+     * @return list<array{id: string, symbol: string, name: string}>|string List of coins on
+     *         success, or one of the self::ERROR_* constants on failure.
+     */
+    public function fetchCoinList(): array|string
+    {
+        $response = $this->request(self::BASE_URL . '/coins/list');
+
+        if (is_string($response)) {
+            return $response;
+        }
+
+        $coins = [];
+
+        foreach ($response as $entry) {
+            if (! isset($entry['id'], $entry['symbol'], $entry['name'])) {
+                continue;
+            }
+
+            $coins[] = [
+                'id' => (string) $entry['id'],
+                'symbol' => (string) $entry['symbol'],
+                'name' => (string) $entry['name']
+            ];
+        }
+
+        return $coins;
+    }
+
+    /**
+     * Fetches market_cap_rank for the top coins by market cap, paginated. Used to disambiguate
+     * symbols shared by several coins (e.g. several coins ticker "GMT"): the ranked one is almost
+     * always the one people mean.
+     *
+     * Best-effort: if a page fails partway through, whatever was fetched so far is returned
+     * instead of failing the whole refresh, since a partial rank list is still useful (only
+     * coins outside it fall back to "no rank", same as if this method weren't called at all).
+     *
+     * @return array<string, int> Map of coin ID -> market_cap_rank.
+     */
+    public function fetchMarketCapRanks(int $pages = 4, int $perPage = 250): array
+    {
+        $ranks = [];
+
+        for ($page = 1; $page <= $pages; $page++) {
+            $url = self::BASE_URL . '/coins/markets?vs_currency=usd&order=market_cap_desc'
+                . '&per_page=' . $perPage . '&page=' . $page . '&sparkline=false';
+
+            $response = $this->request($url);
+
+            if (is_string($response) || $response === []) {
+                break;
+            }
+
+            foreach ($response as $entry) {
+                if (isset($entry['id'], $entry['market_cap_rank']) && is_numeric($entry['market_cap_rank'])) {
+                    $ranks[(string) $entry['id']] = (int) $entry['market_cap_rank'];
+                }
+            }
+
+            // Keep well under the keyless tier's ~5-15 calls/minute limit across the several
+            // calls this method and fetchCoinList() make back to back.
+            if ($page < $pages) {
+                sleep(2);
+            }
+        }
+
+        return $ranks;
+    }
+
+    /**
      * Diagnostic info about the last request, regardless of whether it succeeded. Useful for
      * logging/debugging an ERROR_UPSTREAM response, since that bucket alone doesn't say why.
      * httpCode is 0 if the connection never completed (DNS/TLS/timeout failure; see curlError).

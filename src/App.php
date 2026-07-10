@@ -140,7 +140,8 @@ class App
             return;
         }
 
-        $coinId = $this->resolveCoinId($coinSymbolOrId);
+        $fetcher = $this->createDatabaseFetcher();
+        $coinId = $this->resolveCoinId($coinSymbolOrId, new CryptoSymbolMapRepository($fetcher));
 
         $requestedDate = $this->getRequestedDate($queryParameters);
 
@@ -151,7 +152,6 @@ class App
             return;
         }
 
-        $fetcher = $this->createDatabaseFetcher();
         $repository = new CryptoPriceRepository($fetcher);
         $client = new CoinGeckoClient();
 
@@ -219,11 +219,19 @@ class App
 
     /**
      * CoinGecko coin IDs don't always match their ticker symbol (e.g. BNB is "binancecoin",
-     * not "bnb"). This maps a few well-known symbols people are likely to type, while still
-     * allowing any other string through unchanged in case it's already a valid CoinGecko ID
-     * (e.g. "solana", "dogecoin").
+     * not "bnb"). Resolution order:
+     *
+     *  1. A small hardcoded list of the most common tickers - instant, and unambiguous by
+     *     construction (curated by hand rather than "most popular coin for this symbol").
+     *  2. The cached CoinGecko symbol -> id mapping (see CryptoSymbolMapRepository), which covers
+     *     every ticker CoinGecko tracks. When several coins share a symbol, the cache resolves to
+     *     the one with the best market cap rank. If the mapping table hasn't been populated yet
+     *     (bin/refresh-crypto-symbols.php has never run) or the DB lookup fails for any reason,
+     *     this step is silently skipped rather than erroring the request.
+     *  3. Otherwise, the input is passed through unchanged, on the assumption it's already a
+     *     valid CoinGecko coin ID (e.g. "solana", "dogecoin") rather than a ticker.
      */
-    private function resolveCoinId(string $symbolOrId): string
+    private function resolveCoinId(string $symbolOrId, CryptoSymbolMapRepository $symbolMapRepository): string
     {
         static $knownSymbols = [
             'btc' => 'bitcoin',
@@ -237,7 +245,17 @@ class App
 
         $normalized = strtolower($symbolOrId);
 
-        return $knownSymbols[$normalized] ?? $normalized;
+        if (isset($knownSymbols[$normalized])) {
+            return $knownSymbols[$normalized];
+        }
+
+        try {
+            $cachedCoinId = $symbolMapRepository->findCoinIdBySymbol($normalized);
+        } catch (DatabaseFetcherException $e) {
+            $cachedCoinId = null;
+        }
+
+        return $cachedCoinId ?? $normalized;
     }
 
     private function createDatabaseFetcher(): DatabaseFetcher
@@ -415,15 +433,17 @@ class App
                     . 'or any past date, caching rates per date so repeated historical lookups never re-query '
                     . 'the upstream sources (Frankfurter for EUR/USD, CoinGecko for crypto).' . "\n\n"
                     . '### Finding available coin symbols' . "\n\n"
-                    . 'The `{coin}` path parameter on the crypto endpoints accepts either a well-known ticker '
-                    . '(`BTC`, `ETH`, `BNB`, `XRP`, `SOL`, `ADA`, `DOGE`, case-insensitive) or any '
+                    . 'The `{coin}` path parameter on the crypto endpoints accepts a ticker symbol '
+                    . '(`BTC`, `BCH`, `SOL`, ... case-insensitive) or any '
                     . '[CoinGecko coin ID](https://www.coingecko.com/en/all-cryptocurrencies) directly '
-                    . '(e.g. `polkadot`, `litecoin`). Tickers not in that short list are *not* automatically '
-                    . 'resolved, since most tickers are ambiguous across coins (CoinGecko alone tracks 17,000+); '
-                    . 'use the coin\'s ID instead. To find a coin\'s ID: search for it on coingecko.com and read '
-                    . 'the ID from its page URL or its "API ID" field, or call CoinGecko\'s own '
-                    . '[`/coins/list`](https://api.coingecko.com/api/v3/coins/list) endpoint directly '
-                    . '(no key required) and look up the symbol you have, e.g. `bnb` to find `binancecoin`.',
+                    . '(e.g. `polkadot`, `litecoin`). Tickers are resolved via a small hardcoded list of the '
+                    . 'most common ones, then via a cached mapping of every symbol CoinGecko tracks, refreshed '
+                    . 'periodically from CoinGecko itself (see `bin/refresh-crypto-symbols.php`). Where a symbol '
+                    . 'is shared by several coins, the one with the best market cap rank is used. If a ticker '
+                    . 'isn\'t recognized (e.g. the mapping cache is stale or the coin is too obscure to be in '
+                    . 'it), pass the coin\'s ID instead: search for it on coingecko.com and read the ID from its '
+                    . 'page URL or its "API ID" field, or call CoinGecko\'s own '
+                    . '[`/coins/list`](https://api.coingecko.com/api/v3/coins/list) endpoint directly.',
                 'version' => '1.0.0'
             ],
             'paths' => [
@@ -580,9 +600,9 @@ HTML;
                         'in' => 'path',
                         'required' => true,
                         'schema' => ['type' => 'string'],
-                        'description' => 'BTC, ETH, BNB, XRP, SOL, ADA, DOGE (case-insensitive), '
+                        'description' => 'A ticker symbol (e.g. BTC, BCH, SOL, case-insensitive), '
                             . 'or any CoinGecko coin ID (e.g. polkadot). See the description above '
-                            . 'for how to look up a coin\'s ID.'
+                            . 'for how ticker resolution works and how to look up a coin\'s ID.'
                     ],
                     [
                         'name' => 'date',

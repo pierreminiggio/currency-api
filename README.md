@@ -21,12 +21,21 @@ cache so the same date is never fetched from either upstream source twice.
 
 `{amount}` must be a positive number (integer or decimal, e.g. `10` or `12.5`).
 
-`{coin}` accepts `BTC`, `ETH`, `BNB`, `XRP`, `SOL`, `ADA` or `DOGE` (case-insensitive), or any
+`{coin}` accepts a ticker symbol (`BTC`, `BCH`, `SOL`, ... case-insensitive) or any
 [CoinGecko coin ID](https://www.coingecko.com/en/all-cryptocurrencies) directly (e.g. `polkadot`,
-`litecoin`). Other tickers aren't auto-resolved since they're ambiguous across CoinGecko's 17,000+
-coins; use the coin's ID instead, found either on its CoinGecko page (the "API ID" field) or via
-CoinGecko's own [`/coins/list`](https://api.coingecko.com/api/v3/coins/list) endpoint (no key
-required), which lists every supported coin's `id` and `symbol`.
+`litecoin`). Tickers are resolved in two steps:
+
+1. A small hardcoded list in `App::resolveCoinId()` (`BTC`, `ETH`, `BNB`, `XRP`, `SOL`, `ADA`,
+   `DOGE`) - instant, and unambiguous by construction.
+2. A cached mapping of every symbol CoinGecko tracks, stored in `crypto_symbol_map` and refreshed
+   periodically by `bin/refresh-crypto-symbols.php` (see below). Since ticker symbols aren't
+   unique on CoinGecko (multiple coins can share a symbol, e.g. several coins are ticked `GMT`),
+   the coin with the best market cap rank for that symbol is used.
+
+If a ticker resolves to the wrong coin, or isn't recognized because the cache is empty/stale or
+the coin is too obscure to be worth disambiguating automatically, pass the coin's ID directly
+instead - found either on its CoinGecko page (the "API ID" field) or via CoinGecko's own
+[`/coins/list`](https://api.coingecko.com/api/v3/coins/list) endpoint (no key required).
 
 ### Examples
 
@@ -82,7 +91,28 @@ ALTER TABLE `crypto_price`
 
 ALTER TABLE `crypto_price`
   MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+
+CREATE TABLE `crypto_symbol_map` (
+  `id` int(11) NOT NULL,
+  `symbol` varchar(20) NOT NULL,
+  `coin_id` varchar(64) NOT NULL,
+  `name` varchar(255) NOT NULL,
+  `market_cap_rank` int(11) DEFAULT NULL,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+ALTER TABLE `crypto_symbol_map`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `symbol_coin_id` (`symbol`, `coin_id`),
+  ADD KEY `symbol_rank` (`symbol`, `market_cap_rank`);
+
+ALTER TABLE `crypto_symbol_map`
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
 ```
+
+`crypto_symbol_map` starts empty. Ticker resolution for anything outside the small hardcoded list
+(see above) silently falls back to treating the input as a literal coin ID until it's been
+populated - see "Keeping the symbol mapping fresh" below.
 
 Only the EUR→USD rate is ever stored in `exchange_rate` (`base` = `EUR`, `quote` = `USD`). The
 USD→EUR direction is derived by dividing instead of caching a second row, since both rates come
@@ -94,6 +124,23 @@ coin is derived by dividing, the same way as the fiat table.
 `price` uses `decimal(30,10)` rather than `exchange_rate.rate`'s `decimal(20,10)` to comfortably
 fit Bitcoin-sized prices today and headroom for large future values, while still keeping enough
 decimal precision for very low-priced coins.
+
+## Keeping the symbol mapping fresh
+
+`bin/refresh-crypto-symbols.php` rebuilds `crypto_symbol_map` from CoinGecko's `/coins/list` and
+`/coins/markets` endpoints. Run it once after setup, then put it on a cron - daily or weekly is
+plenty, since coin listings barely change day to day:
+
+```
+17 3 * * * php /path/to/currency-api/bin/refresh-crypto-symbols.php >> /var/log/currency-api/refresh-crypto-symbols.log 2>&1
+```
+
+It's intentionally a separate offline job rather than something triggered from a live request:
+it makes 5 calls to CoinGecko's rate-limited keyless tier and can take several seconds, neither
+of which belongs in the request path of an API call. It swaps the table in atomically (via a
+shadow table + `RENAME TABLE`), so it's safe to run while the API is serving live traffic - no
+window where a lookup could hit an empty or half-populated table. It exits `1` on failure so cron
+or a monitoring wrapper can alert on it; a failed run leaves the existing cache untouched.
 
 ## A note on the CoinGecko keyless tier
 
