@@ -133,10 +133,12 @@ class CoinGeckoClient
     }
 
     /**
-     * Sane upper bounds for symbol/name length. CoinGecko's list includes plenty of spam/junk
-     * coin listings, some with absurdly long "symbol" fields (occasionally entire phrases) that
-     * are never going to be typed as a ticker anyway - those are dropped rather than truncated,
-     * since a truncated garbage symbol could still collide with (and shadow) a real one.
+     * Sane upper bounds for symbol/name length, and a charset restriction on symbol. CoinGecko's
+     * list includes plenty of spam/junk coin listings - some with absurdly long "symbol" fields
+     * (occasionally entire phrases), some using emoji or other non-ticker characters. None of
+     * that is ever going to be typed as a ticker, so those rows are dropped rather than
+     * truncated/sanitized, since a mangled garbage symbol could still collide with (and shadow) a
+     * real one.
      */
     private const MAX_SYMBOL_LENGTH = 30;
     private const MAX_NAME_LENGTH = 255;
@@ -175,6 +177,7 @@ class CoinGeckoClient
                 || strlen($symbol) > self::MAX_SYMBOL_LENGTH
                 || strlen($name) > self::MAX_NAME_LENGTH
                 || strlen($id) > self::MAX_COIN_ID_LENGTH
+                || ! ctype_alnum($symbol)
             ) {
                 continue;
             }

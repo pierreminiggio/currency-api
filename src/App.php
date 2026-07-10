@@ -267,7 +267,8 @@ class App
             $dbConfig['host'],
             $dbConfig['database'],
             $dbConfig['username'],
-            $dbConfig['password']
+            $dbConfig['password'],
+            DatabaseConnection::UTF8_MB4
         ));
     }
 

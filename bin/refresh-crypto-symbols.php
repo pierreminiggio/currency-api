@@ -39,7 +39,8 @@ $fetcher = new DatabaseFetcher(new DatabaseConnection(
     $dbConfig['host'],
     $dbConfig['database'],
     $dbConfig['username'],
-    $dbConfig['password']
+    $dbConfig['password'],
+    DatabaseConnection::UTF8_MB4
 ));
 
 $client = new CoinGeckoClient();
