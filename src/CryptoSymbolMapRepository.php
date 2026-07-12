@@ -26,6 +26,28 @@ class CryptoSymbolMapRepository
     }
 
     /**
+     * Check if already have a CoinGecko coin ID stored.
+     *
+     * @return string|null Null if the symbol isn't in the cached mapping at all.
+     */
+    public function hasCoinId(string $coinId): bool
+    {
+        $rows = $this->fetcher->rawQuery(
+            'SELECT coin_id FROM `' . self::TABLE . '` '
+                . 'WHERE coin_id = :coin_id '
+                . 'ORDER BY (market_cap_rank IS NULL) ASC, market_cap_rank ASC '
+                . 'LIMIT 1',
+            ['coin_id' => $coinId]
+        );
+
+        if (! $rows) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
      * Resolves a ticker symbol (e.g. "bch", already lowercased) to a CoinGecko coin ID.
      *
      * A symbol can map to several coins (tickers aren't unique on CoinGecko), so this picks the

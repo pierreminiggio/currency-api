@@ -248,12 +248,21 @@ class App
             'doge' => 'dogecoin',
 
             'matic' => 'polygon-ecosystem-token', // Old POL name
+
+            // v SUI Network v
+            'suiusdt' => 'tether',
+            'suieth' => 'ethereum',
+            // ^ SUI Network ^
         ];
 
         $normalized = strtolower($symbolOrId);
 
         if (isset($knownSymbols[$normalized])) {
             return $knownSymbols[$normalized];
+        }
+
+        if ($symbolMapRepository->hasCoinId($normalized)) {
+            return $normalized;
         }
 
         try {
