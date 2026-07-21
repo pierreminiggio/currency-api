@@ -246,6 +246,7 @@ class App
             'sol' => 'solana',
             'ada' => 'cardano',
             'doge' => 'dogecoin',
+            'tr3' => 'tr3zor',
 
             'matic' => 'polygon-ecosystem-token', // Old POL name
 
