@@ -394,7 +394,7 @@ class App
         $today = gmdate('Y-m-d');
         $effectiveDate = $requestedDate ?? $today;
 
-        if ($requestedDate !== null && $requestedDate !== $today) {
+        if ($requestedDate !== null && $effectiveDate !== $today) {
             // A specific past date was requested: if we already have it cached, we never
             // need to call CoinGecko again, since historical prices don't change.
             $cachedPrice = $repository->findCachedPrice($coinId, self::VS_CURRENCY, $requestedDate);
