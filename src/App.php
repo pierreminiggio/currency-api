@@ -393,8 +393,9 @@ class App
     ): array|string {
         $today = gmdate('Y-m-d');
         $effectiveDate = $requestedDate ?? $today;
+        $isEffectiveDateToday = $effectiveDate === $today;
 
-        if ($requestedDate !== null && $effectiveDate !== $today) {
+        if ($requestedDate !== null && ! $isEffectiveDateToday) {
             // A specific past date was requested: if we already have it cached, we never
             // need to call CoinGecko again, since historical prices don't change.
             $cachedPrice = $repository->findCachedPrice($coinId, self::VS_CURRENCY, $requestedDate);
@@ -418,7 +419,7 @@ class App
         // cannot actually fail, but we guard it anyway rather than assume.
         $coinGeckoDate = null;
 
-        if ($requestedDate !== null) {
+        if ($requestedDate !== null && ! $isEffectiveDateToday) {
             $parsedDate = \DateTime::createFromFormat('Y-m-d', $requestedDate);
 
             if ($parsedDate === false) {
