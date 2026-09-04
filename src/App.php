@@ -247,6 +247,7 @@ class App
             'ada' => 'cardano',
             'doge' => 'dogecoin',
             'tr3' => 'tr3zor',
+            'wbtc' => 'wrapped-bitcoin',
 
             'matic' => 'polygon-ecosystem-token', // Old POL name
 
